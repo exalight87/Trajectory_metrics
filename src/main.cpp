@@ -6,6 +6,27 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <optional>
+#include <chrono>
+
+class Bench
+{
+public:
+    Bench(std::string name) :
+        _name(name),
+        _begin(std::chrono::high_resolution_clock::now())
+        {};
+
+    ~Bench()
+    {
+        std::chrono::duration<double, std::milli> duration = std::chrono::high_resolution_clock::now() - _begin;
+        std::cout << _name << " took : " << duration.count() << "ms" << std::endl;
+    }
+
+private:
+    std::string _name;
+    std::chrono::high_resolution_clock::time_point _begin;
+};
 
 struct Point{
     int x, y, t;
@@ -16,8 +37,108 @@ struct Point{
     }
 };
 
-std::vector<std::vector<Point>> read_file(const std::string& filepath)
+#define NB_NEIGHBOURS_WANTED 3
+
+class Trajectory
 {
+public:
+    Trajectory() = delete;
+    Trajectory(uint32_t id, std::vector<Point>&& points) : 
+        _id(id),
+        _points(points),
+        _length(std::nullopt),
+        _duration(std::nullopt),
+        _speed(std::nullopt)
+    {
+        _neighbours_length.fill({ -1.0, nullptr });
+        _neighbours_speed.fill({ -1.0, nullptr });
+    };
+
+    double length()
+    {
+        if(!_length)
+        {
+            _length = 0;
+
+            for(int i = 0; i < _points.size() - 1; ++i)
+            {
+                _length.value() += _points[i].distance_from(_points[i+1]);
+            }
+        }
+
+        return _length.value();
+    }
+
+    double duration()
+    {
+        if(!_duration)
+        {
+            _duration =_points.back().t - _points.front().t;
+        }
+
+        return _duration.value();
+    }
+
+    double speed()
+    {
+        if(!_speed)
+        {
+            _speed = (duration() == 0.0 || length() == 0.0) ? 0.0 : length() / duration();
+        }
+
+        return _speed.value();
+    }
+
+    uint32_t id() const { return _id; };
+
+    void update_neighbours(double length, double speed, Trajectory* neighbour)
+    {
+        auto shift_right = [](std::array< std::pair<double, Trajectory*>, NB_NEIGHBOURS_WANTED>& neighbours, uint32_t pos)
+        {
+            for (uint32_t i = neighbours.size() - 1; i > pos; --i)
+            {
+                neighbours[i] = neighbours[i - 1];
+            }
+        };
+
+        for (uint32_t i = 0; i < _neighbours_length.size(); ++i)
+        {
+            if (_neighbours_length[i].first < length)
+            {
+                shift_right(_neighbours_length, i);
+                _neighbours_length[i] = { length, neighbour };
+                break;
+            }
+        }
+
+        for (uint32_t i = 0; i < _neighbours_speed.size(); ++i)
+        {
+            if (_neighbours_speed[i].first < speed)
+            {
+                shift_right(_neighbours_speed, i);
+                _neighbours_speed[i] = { speed, neighbour };
+                break;
+            }
+        }
+    }
+
+    const auto& neighbours_length() const { return _neighbours_length; };
+    const auto& neighbours_speed() const { return _neighbours_speed; };
+private:
+    uint32_t _id;
+    std::vector<Point> _points;
+    std::optional<double> _length;
+    std::optional<double> _duration;
+    std::optional<double> _speed;
+
+    std::array< std::pair<double, Trajectory*>, NB_NEIGHBOURS_WANTED> _neighbours_length;
+    std::array< std::pair<double, Trajectory*>, NB_NEIGHBOURS_WANTED> _neighbours_speed;
+};
+
+std::vector<Trajectory> read_file(const std::string& filepath)
+{
+    Bench bench("Read file");
+
     std::ifstream ifs(filepath, std::ios::in);
 
     if(!ifs)
@@ -25,7 +146,7 @@ std::vector<std::vector<Point>> read_file(const std::string& filepath)
         throw std::runtime_error(filepath + ": " + std::strerror(errno));
     }
 
-    std::vector<std::vector<Point>> trajectories;
+    std::vector<Trajectory> trajectories;
 
     std::string trajectory_count_str;
     std::getline(ifs, trajectory_count_str, ' ');
@@ -33,17 +154,17 @@ std::vector<std::vector<Point>> read_file(const std::string& filepath)
     int trajectory_count = std::stoi(trajectory_count_str);
     trajectories.reserve( trajectory_count );
 
-    for(int traj_idx = 0; traj_idx < trajectory_count; ++traj_idx)
+    for(uint32_t traj_idx = 0; traj_idx < trajectory_count; ++traj_idx)
     {
         std::string point_count_str;
         std::getline(ifs, point_count_str, ' ');
 
         int point_count = std::stoi(point_count_str);
 
-        std::vector<Point> trajectory;
-        trajectory.reserve(point_count);
+        std::vector<Point> points;
+        points.reserve(point_count);
 
-        for(int pt_idx = 0; pt_idx < point_count; ++pt_idx)
+        for(uint32_t pt_idx = 0; pt_idx < point_count; ++pt_idx)
         {
             std::string x_str;
             std::getline(ifs, x_str, ' ');
@@ -52,116 +173,41 @@ std::vector<std::vector<Point>> read_file(const std::string& filepath)
             std::string t_str;
             std::getline(ifs, t_str, ' ');
 
-            trajectory.push_back( Point{std::stoi(x_str), std::stoi(y_str), std::stoi(t_str)} );
+            points.push_back( Point{std::stoi(x_str), std::stoi(y_str), std::stoi(t_str)} );
         }
 
-        std::sort(trajectory.begin(), trajectory.end(), [](const Point& p1, const Point& p2) { return p1.t < p2.t; });
-        trajectories.push_back(trajectory);
+        std::sort(points.begin(), points.end(), [](const Point& p1, const Point& p2) { return p1.t < p2.t; });
+        
+        trajectories.emplace_back(traj_idx, std::move(points));
     }
 
-    return std::move(trajectories);
-
+    return trajectories;
 }
 
-double length(const std::vector<Point>& trajectory)
+
+void compute_classifications(std::vector<Trajectory>& trajectories)
 {
-    double length = 0;
+    Bench bench("Compute classifications");
 
-    for(int i = 0; i < trajectory.size() - 1; ++i)
+    for(uint32_t i = 0; i < trajectories.size(); ++i)
     {
-        length += trajectory[i].distance_from(trajectory[i+1]);
-    }
-
-    return length;
-}
-
-std::vector<std::map<double, int>> compute_length_classification(const std::vector<std::vector<Point>>& trajectories, const std::vector<double>& lengths)
-{
-    std::vector<std::map<double, int>> length_diff_classifications;
-    length_diff_classifications.reserve(trajectories.size());
-
-    for(int i = 0; i < trajectories.size(); ++i)
-    {
-        std::map<double, int> length_diff_classification;
-        for(int j = 0; j < trajectories.size(); ++j)
+        for(uint32_t j = i + 1; j < trajectories.size(); ++j)
         {
-            if(i==j) 
-            {
-                continue;
-            }
-            length_diff_classification[std::abs(lengths[i] - lengths[j])] = j;
+            double length_diff = std::abs(trajectories[i].length() - trajectories[j].length());
+            double speed_diff = std::abs(trajectories[i].speed() - trajectories[j].speed());
+
+            trajectories[i].update_neighbours(length_diff, speed_diff, &trajectories[j]);
+            trajectories[j].update_neighbours(length_diff, speed_diff, &trajectories[i]);
         }
-        length_diff_classifications.push_back(length_diff_classification);
     }
-
-    return std::move(length_diff_classifications);
-}
-
-double speed(const std::vector<Point>& trajectory, double distance)
-{    
-    double diff_time = trajectory.rend()->t - trajectory.begin()->t;
-    return (diff_time == 0.0 || distance == 0.0) ? 0.0 : diff_time / distance;
-}
-
-std::vector<std::map<double, int>> compute_speed_classification(const std::vector<std::vector<Point>>& trajectories, const std::vector<double>& lengths)
-{
-    std::vector<double> speeds(trajectories.size(), 0);
-    for(int i = 0; i < trajectories.size(); ++i)
-    {
-        speeds[i] = speed(trajectories[i], lengths[i]);
-    }
-
-    std::vector<std::map<double, int>> speed_diff_classifications;
-    speed_diff_classifications.reserve(trajectories.size());
-
-    for(int i = 0; i < trajectories.size(); ++i)
-    {
-        std::map<double, int> speed_diff_classification;
-        for(int j = 0; j < trajectories.size(); ++j)
-        {
-            if(i==j) 
-            {
-                continue;
-            }
-            speed_diff_classification[std::abs(speeds[i] - speeds[j])] = j;
-        }
-        speed_diff_classifications.push_back(speed_diff_classification);
-    }
-
-    return std::move(speed_diff_classifications);
 }
 
 auto load_data(const std::string& filename)
 {
+    Bench bench("Load data");
     auto trajectories = read_file(filename);
-
-    std::vector<double> lengths(trajectories.size(), 0);
-    for(int i = 0; i < trajectories.size(); ++i)
-    {
-        lengths[i] = length(trajectories[i]);
-    }
-
-    return std::move(std::make_pair(
-        compute_length_classification(trajectories, lengths), 
-        compute_speed_classification(trajectories, lengths)));
-}
-
-template <size_t S>
-std::array<int, S> getClosest(std::map<double, int> diff_classifications)
-{
-    std::array<int, S> closest{-1, -1, -1};
-    int count = 0;
-    for( const auto& [diff, traj] : diff_classifications)
-    {
-        closest[count] = traj;
-
-        if( ++count >= S )
-        {
-            break;
-        }
-    }
-
-    return std::move(closest);
+    compute_classifications(trajectories);
+    return trajectories;
 }
 
 enum Metric 
@@ -218,7 +264,7 @@ int main(int argc, char *argv[])
         }
     }
     
-    auto [length_diff_classifications, speed_diff_classifications] = load_data(filename);
+    auto trajectories = load_data(filename);
 
     // CLI menu and action loop
     while(true)
@@ -227,12 +273,12 @@ int main(int argc, char *argv[])
         Metric metric = Unknown;
 
         std::cout << "Please select trajectory and metric.\n";
-        std::cout << "  Trajectories [ 0 - "  << length_diff_classifications.size() <<"] : ";
+        std::cout << "  Trajectories [ 0 - "  << trajectories.size() <<"] : ";
         std::cin >> traj;
         std::cout << "  Metrics ( Length: 1, Speed: 2 ) : ";
         std::cin >> metric;
 
-        if(traj < 0 || traj >= length_diff_classifications.size() || metric <= Unknown || metric >= EnumSize)
+        if(traj < 0 || traj >= trajectories.size() || metric <= Unknown || metric >= EnumSize)
         {
             std::cout << "Trajectory or Metric have bad values\n";
             continue;
@@ -241,45 +287,46 @@ int main(int argc, char *argv[])
         if(metric == Length)
         {
             std::cout << "Closest trajectories from trajectory " << traj << " based on length \n";
-            for(const int& traj_idx : getClosest<3>(length_diff_classifications.at(traj)))
+            for(const auto& [length, trajectory] : trajectories[traj].neighbours_length())
             {
-                if(traj_idx == -1) {break;}
-                std::cout << traj_idx << " ";
+                if(trajectory->id() == -1) { break; }
+                std::cout << trajectory->id() << " ";
             }
             std::cout << '\n';
         }
         else if( metric == Speed )
         {
             std::cout << "Closest trajectories from trajectory " << traj << " based on speed \n";
-            for(const int& traj_idx : getClosest<3>(speed_diff_classifications.at(traj)))
+            for (const auto& [length, trajectory] : trajectories[traj].neighbours_speed())
             {
-                if(traj_idx == -1) {break;}
-                std::cout << traj_idx << " ";
+                if (trajectory->id() == -1) { break; }
+                std::cout << trajectory->id() << " ";
             }
             std::cout << '\n';
         }
+        
         
         // Debug prompt if needed
         if (showClassification)
         {
             std::cout << "Lengths :\n";
-            for(int i = 0; i < length_diff_classifications.size(); ++i)
+            for(int i = 0; i < trajectories.size(); ++i)
             {
                 std::cout<< "traj[" << i << "] : ";
-                for(const auto& [lenght_diff, traj] : length_diff_classifications[i])
+                for(const auto& [length, trajectory] : trajectories[i].neighbours_length())
                 {
-                    std::cout << lenght_diff << " (" << traj << "), ";
+                    std::cout << length << " (" << trajectory->id() << "), ";
                 }
                 std::cout << '\n';
             }
 
             std::cout << "Speeds :\n";
-            for(int i = 0; i < speed_diff_classifications.size(); ++i)
+            for(int i = 0; i < trajectories.size(); ++i)
             {
                 std::cout<< "traj[" << i << "] : ";
-                for(const auto& [speed_diff, traj] : speed_diff_classifications[i])
+                for(const auto& [speed, trajectory] : trajectories[i].neighbours_speed())
                 {
-                    std::cout << speed_diff << " (" << traj << "), ";
+                    std::cout << speed << " (" << trajectory->id() << "), ";
                 }
                 std::cout << '\n';
             }
