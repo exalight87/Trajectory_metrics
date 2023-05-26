@@ -50,8 +50,8 @@ public:
         _duration(std::nullopt),
         _speed(std::nullopt)
     {
-        _neighbours_length.fill({ -1.0, nullptr });
-        _neighbours_speed.fill({ -1.0, nullptr });
+        _neighbours_length.fill({ std::numeric_limits<double>::max(), nullptr});
+        _neighbours_speed.fill({ std::numeric_limits<double>::max(), nullptr });
     };
 
     double length()
@@ -95,6 +95,11 @@ public:
     {
         auto shift_right = [](std::array< std::pair<double, Trajectory*>, NB_NEIGHBOURS_WANTED>& neighbours, uint32_t pos)
         {
+            if(pos >= neighbours.size() || neighbours[pos].second == nullptr)
+            {
+                return;
+            }
+
             for (uint32_t i = neighbours.size() - 1; i > pos; --i)
             {
                 neighbours[i] = neighbours[i - 1];
@@ -103,7 +108,7 @@ public:
 
         for (uint32_t i = 0; i < _neighbours_length.size(); ++i)
         {
-            if (_neighbours_length[i].first < length)
+            if (_neighbours_length[i].first > length)
             {
                 shift_right(_neighbours_length, i);
                 _neighbours_length[i] = { length, neighbour };
@@ -113,7 +118,7 @@ public:
 
         for (uint32_t i = 0; i < _neighbours_speed.size(); ++i)
         {
-            if (_neighbours_speed[i].first < speed)
+            if (_neighbours_speed[i].first > speed)
             {
                 shift_right(_neighbours_speed, i);
                 _neighbours_speed[i] = { speed, neighbour };
