@@ -264,7 +264,7 @@ int main(int argc, char *argv[])
         }
     }
     
-    auto trajectories = load_data(filename);
+    std::vector<Trajectory> trajectories = std::move(load_data(filename));
 
     // CLI menu and action loop
     while(true)
@@ -287,9 +287,9 @@ int main(int argc, char *argv[])
         if(metric == Length)
         {
             std::cout << "Closest trajectories from trajectory " << traj << " based on length \n";
-            for(const auto& [length, trajectory] : trajectories[traj].neighbours_length())
+            for (const auto& [_, trajectory] : trajectories[traj].neighbours_length())
             {
-                if(trajectory->id() == -1) { break; }
+                if (trajectory == nullptr) { break; }
                 std::cout << trajectory->id() << " ";
             }
             std::cout << '\n';
@@ -297,9 +297,9 @@ int main(int argc, char *argv[])
         else if( metric == Speed )
         {
             std::cout << "Closest trajectories from trajectory " << traj << " based on speed \n";
-            for (const auto& [length, trajectory] : trajectories[traj].neighbours_speed())
+            for (const auto& [_, trajectory] : trajectories[traj].neighbours_speed())
             {
-                if (trajectory->id() == -1) { break; }
+                if (trajectory == nullptr) { break; }
                 std::cout << trajectory->id() << " ";
             }
             std::cout << '\n';
